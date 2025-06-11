@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>LIFF แบบสอบถาม</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding-top: 15px; font-family: 'Sarabun', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; }
+        #app-container { padding: 15px; }
+        #form-view-container { display: none; }
+        .iframe-container { position: relative; width: 100%; height: 80vh; }
+        #google-form-iframe { width: 100%; height: 100%; border: 1px solid #dee2e6; }
+        #iframe-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(255, 255, 255, 0); z-index: 10; display: none; cursor: not-allowed; }
+        .list-group-item a { text-decoration: none; display: block; padding: 0.75rem 1.25rem; color: #0d6efd; }
+        .list-group-item a:hover { background-color: #f8f9fa; }
+        #user-info-card { margin-bottom: 20px; padding: 15px; background-color: #e9ecef; border-radius: 0.375rem; }
+        h1, h2, h3 { color: #343a40; }
+        #error-message-display { color: red; background-color: #fdd; border: 1px solid #fbb; padding: 10px; margin-bottom: 15px; border-radius: 5px; display: none; }
+        #forms-loading-spinner { display: none; }
+        .form-buttons-container { display: flex; align-items: center; flex-wrap: wrap; }
+    </style>
+</head>
+<body>
+    <div id="app-container">
+        <div id="error-message-display"></div>
+        <div id="user-info-card">กำลังโหลด...</div>
+
+        <div id="links-view">
+            <h2 class="mb-3">เลือกแบบสอบถาม</h2>
+            <div id="forms-loading-spinner" class="spinner-border text-primary my-3" role="status">
+                <span class="visually-hidden">กำลังโหลดรายการแบบสอบถาม...</span>
+            </div>
+            <ul id="form-links-list" class="list-group">
+            </ul>
+        </div>
+
+        <div id="form-view-container">
+            <h3 id="current-form-title-span" class="mb-3"></h3>
+            <div class="form-buttons-container mb-3">
+                <button id="back-to-links-page-btn" class="btn btn-outline-secondary">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-left-circle" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M1 8a7 7 0 1 0 14 0A7 7 0 0 0 1 8m15 0A8 8 0 1 1 0 8a8 8 0 0 1 16 0m-4.5-.5a.5.5 0 0 1 0 1H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5z"/></svg>
+                    กลับไปหน้ารายการ
+                </button>
+                <button id="form-completed-success-btn" class="btn btn-success ms-2" style="display: none;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-check-circle-fill" viewBox="0 0 16 16"><path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0m-3.97-3.03a.75.75 0 0 0-1.08.022L7.477 9.417 5.384 7.323a.75.75 0 0 0-1.06 1.06L6.97 11.03a.75.75 0 0 0 1.079-.02l3.992-4.99a.75.75 0 0 0-.01-1.05z"/></svg>
+                    ทำแบบทดสอบสำเร็จแล้ว
+                </button>
+            </div>
+            <div class="iframe-container">
+                 <iframe id="google-form-iframe" sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-top-navigation"></iframe>
+                 <div id="iframe-overlay"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <script>
+        // --- ⚙️ การตั้งค่า ---
+        // <<<<---- [สำคัญ] แก้ไขค่า 3 ตัวแปรนี้ ----
+        const LIFF_ID = "2007550301-BqmWMXyX"; // แทนที่ด้วย LIFF ID ของคุณ
+        const USER_CLIENT_ID = "100625001"; // แทนที่ด้วย Client ID ของลูกค้า หรือรับค่ามาจาก URL Parameter
+        const VERIFICATION_URL = 'https://script.google.com/macros/s/AKfycbwA47zqdu3l2BybL4pvNruduNuTnMojeBrfou0_mRo7kEYs9Qy-LuoatLDZcU-SzChk/exec'; // แทนที่ด้วย URL ของ "Verification.gs"
+        // <<<<------------------------------------
+
+        const SESSION_ID_STORAGE_KEY = 'liffQuizAppSessionId';
+
+        // --- สถานะของแอปพลิเคชัน (Global State) ---
+        let mainAppUrl = null;
+        let liffUserProfile = null;
+        let currentActiveForm = null;
+        let isIframeInitialLoad = true;
+        let isVisibilityListenerActive = false;
+        let isFormSubmitted = false;
+        let completedFormIds = [];
+
+        // --- DOM Elements ---
+        const userInfoDiv = document.getElementById('user-info-card');
+        const linksViewDiv = document.getElementById('links-view');
+        const formViewContainerDiv = document.getElementById('form-view-container');
+        const formLinksUl = document.getElementById('form-links-list');
+        const googleFormIframeEl = document.getElementById('google-form-iframe');
+        const currentFormTitleEl = document.getElementById('current-form-title-span');
+        const backToLinksBtnEl = document.getElementById('back-to-links-page-btn');
+        const errorMessageDisplay = document.getElementById('error-message-display');
+        const formsLoadingSpinner = document.getElementById('forms-loading-spinner');
+        const formCompletedSuccessBtnEl = document.getElementById('form-completed-success-btn');
+        const iframeOverlay = document.getElementById('iframe-overlay');
+
+        document.addEventListener('DOMContentLoaded', initializeLiffApp);
+
+        async function initializeLiffApp() {
+            showError("");
+            console.log("DOMContentLoaded, starting initializeLiffApp...");
+            try {
+                const storedCompletedForms = localStorage.getItem('completedFormIds');
+                if (storedCompletedForms) {
+                    completedFormIds = JSON.parse(storedCompletedForms);
+                }
+
+                userInfoDiv.innerHTML = 'กำลังเตรียมการ LIFF SDK... (ขั้นตอนที่ 1/6)';
+                await liff.init({ liffId: LIFF_ID });
+                
+                userInfoDiv.innerHTML = 'LIFF SDK เริ่มต้นแล้ว กำลังตรวจสอบการ Login... (ขั้นตอนที่ 2/6)';
+                if (!liff.isLoggedIn()) {
+                    userInfoDiv.innerHTML = '<p class="text-info">คุณยังไม่ได้เข้าสู่ระบบ LINE...<br>กำลังพยายามเข้าสู่ระบบ...</p>';
+                    liff.login();
+                    return;
+                }
+
+                userInfoDiv.innerHTML = 'เข้าสู่ระบบ LINE แล้ว กำลังโหลดข้อมูลโปรไฟล์... (ขั้นตอนที่ 3/6)';
+                
+                try {
+                    liffUserProfile = await liff.getProfile();
+                } catch (profileError) {
+                    console.error("Error getting LIFF profile:", profileError);
+                    throw new Error("ไม่สามารถดึงข้อมูลโปรไฟล์ LINE ของคุณได้ ตรวจสอบว่าคุณได้อนุญาตให้แอปเข้าถึงข้อมูลโปรไฟล์แล้วหรือไม่ (Scope: profile)");
+                }
+
+                userInfoDiv.innerHTML = `<p class="mb-1"><strong>สวัสดีคุณ:</strong> ${liffUserProfile.displayName}</p> (ขั้นตอนที่ 4/6)`;
+
+                userInfoDiv.innerHTML = `กำลังตรวจสอบสิทธิ์การใช้งาน... (ขั้นตอนที่ 5/6)`;
+                await verifyClientAndGetAppUrl();
+                console.log("Client verified successfully. Main App URL is set.");
+
+                userInfoDiv.innerHTML = `กำลังโหลดรายการแบบสอบถาม... (ขั้นตอนที่ 6/6)`;
+                await fetchAndRenderFormLinks();
+
+                userInfoDiv.innerHTML = `
+                    <p class="mb-1"><strong>สวัสดีคุณ:</strong> ${liffUserProfile.displayName}</p>
+                    <p class="text-success mb-0"><small>โหลดรายการแบบสอบถามเรียบร้อยแล้ว</small></p>`;
+
+                navigateToLinksPage();
+            } catch (error) {
+                console.error("Initialization or Verification Error:", error);
+                const userMessage = `<strong>เกิดข้อผิดพลาด:</strong> ${error.message || 'ไม่สามารถเริ่มต้นแอปพลิเคชันได้'}`;
+                showError(userMessage);
+                userInfoDiv.innerHTML = `<p class="text-danger">ไม่สามารถโหลดข้อมูลได้ กรุณาลอง Refresh หรือเปิดใหม่อีกครั้ง</p>`;
+                linksViewDiv.style.display = 'none';
+            }
+        }
+
+        async function verifyClientAndGetAppUrl() {
+            if (!USER_CLIENT_ID) throw new Error("ไม่พบรหัสผู้ใช้งาน (Client ID) สำหรับการตรวจสอบสิทธิ์");
+            if (!VERIFICATION_URL || VERIFICATION_URL.includes('...')) throw new Error("ไม่ได้ตั้งค่า URL สำหรับการตรวจสอบสิทธิ์ (VERIFICATION_URL)");
+
+            const url = `${VERIFICATION_URL}?action=verifyClient&user_client_id=${USER_CLIENT_ID}&t=${new Date().getTime()}`;
+            const response = await fetch(url);
+
+            if (!response.ok) throw new Error(`ไม่สามารถติดต่อเซิร์ฟเวอร์ตรวจสอบสิทธิ์ได้ (HTTP Status: ${response.status})`);
+            
+            const result = await response.json();
+            
+            if (result.status === 'success' && result.web_app_url) {
+                mainAppUrl = result.web_app_url;
+            } else {
+                let errorMessage = result.message || "การตรวจสอบสิทธิ์ล้มเหลว";
+                
+                // --- CHANGED: แก้ไขข้อความสำหรับบัญชีหมดอายุโดยเฉพาะ ---
+                if (result.status === 'expired') {
+                    errorMessage = 'บัญชีของท่านหมดอายุ กรุณาติดต่อ <a href="https://lin.ee/dadcyUE" target="_blank" rel="noopener noreferrer">https://lin.ee/dadcyUE</a>';
+                }
+                // --------------------------------------------------------
+
+                if (result.status === 'not_found') {
+                    errorMessage = "ไม่พบข้อมูลของคุณในระบบ กรุณาติดต่อผู้ให้บริการ";
+                }
+                
+                throw new Error(errorMessage);
+            }
+        }
+        
+        async function fetchAndRenderFormLinks() {
+            if (!mainAppUrl) {
+                showError("<strong>ข้อผิดพลาดร้ายแรง:</strong> ไม่พบ URL ของแอปพลิเคชันหลัก ไม่สามารถดำเนินการต่อได้");
+                return;
+            }
+            formsLoadingSpinner.style.display = 'block';
+            formLinksUl.innerHTML = '';
+            try {
+                const response = await fetch(`${mainAppUrl}?action=getFormConfigs&t=${new Date().getTime()}`);
+                if (!response.ok) throw new Error(`ไม่สามารถติดต่อ Server ได้ (HTTP status: ${response.status})`);
+                const result = await response.json();
+                if (result.status === "success") {
+                    if (result.sessionId !== undefined) {
+                        const serverSessionId = String(result.sessionId);
+                        const storedSessionId = localStorage.getItem(SESSION_ID_STORAGE_KEY);
+                        if (serverSessionId !== storedSessionId) {
+                            completedFormIds = [];
+                            localStorage.removeItem('completedFormIds');
+                            localStorage.setItem(SESSION_ID_STORAGE_KEY, serverSessionId);
+                        }
+                    }
+                    if (Array.isArray(result.data) && result.data.length > 0) {
+                        renderFormLinks(result.data);
+                    } else {
+                        formLinksUl.innerHTML = `<li class="list-group-item text-muted">${result.message || 'ไม่พบรายการแบบสอบถาม'}</li>`;
+                    }
+                } else {
+                    throw new Error(result.message || "ไม่สามารถดึงข้อมูลรายการแบบสอบถามได้");
+                }
+            } catch (error) {
+                showError(`<strong>เกิดข้อผิดพลาดในการโหลดรายการแบบสอบถาม:</strong> ${error.message}`);
+            } finally {
+                formsLoadingSpinner.style.display = 'none';
+            }
+        }
+
+        function renderFormLinks(formsData) {
+            formLinksUl.innerHTML = "";
+            let hasVisibleForms = false;
+            formsData.forEach(form => {
+                const listItem = document.createElement('li');
+                listItem.className = 'list-group-item p-0';
+                const link = document.createElement('a');
+                link.href = '#';
+                if (completedFormIds.includes(form.id)) {
+                    link.textContent = `${form.title} (ทำแล้ว)`;
+                    link.className = 'text-muted';
+                    link.style.textDecoration = 'line-through';
+                    link.onclick = (e) => e.preventDefault();
+                    listItem.style.backgroundColor = '#e9ecef';
+                } else {
+                    link.textContent = form.title;
+                    link.onclick = (e) => { e.preventDefault(); loadFormIntoIframeView(form); };
+                    hasVisibleForms = true;
+                }
+                listItem.appendChild(link);
+                formLinksUl.appendChild(listItem);
+            });
+            if (!hasVisibleForms && formsData.length > 0) {
+                formLinksUl.innerHTML = '<li class="list-group-item text-success">คุณทำแบบทดสอบทั้งหมดเรียบร้อยแล้ว!</li>';
+            }
+        }
+
+        function showError(message) {
+            errorMessageDisplay.innerHTML = message;
+            errorMessageDisplay.style.display = message ? 'block' : 'none';
+        }
+
+        function navigateToLinksPage() {
+            linksViewDiv.style.display = 'block';
+            formViewContainerDiv.style.display = 'none';
+            if (googleFormIframeEl.src !== 'about:blank') {
+                googleFormIframeEl.src = 'about:blank';
+            }
+            currentActiveForm = null;
+            isFormSubmitted = false;
+            removeVisibilityChangeListener();
+            document.title = "เลือกแบบสอบถาม";
+            fetchAndRenderFormLinks();
+        }
+
+        function navigateToFormPage(form) {
+            linksViewDiv.style.display = 'none';
+            formViewContainerDiv.style.display = 'block';
+            currentFormTitleEl.textContent = form.title;
+            document.title = form.title;
+        }
+
+        function updateFormViewButtons() {
+            if (currentActiveForm) {
+                formCompletedSuccessBtnEl.style.display = isFormSubmitted ? 'inline-block' : 'none';
+                backToLinksBtnEl.disabled = isFormSubmitted;
+            }
+        }
+
+        function loadFormIntoIframeView(form) {
+            currentActiveForm = form;
+            isFormSubmitted = false;
+            iframeOverlay.style.display = 'none';
+            navigateToFormPage(form);
+            updateFormViewButtons();
+            let targetFormUrl = form.url;
+            if (!targetFormUrl.includes('embedded=true')) {
+                targetFormUrl += (targetFormUrl.includes('?') ? '&' : '?') + 'embedded=true';
+            }
+            isIframeInitialLoad = true;
+            googleFormIframeEl.src = targetFormUrl;
+        }
+
+        googleFormIframeEl.onload = function() {
+            const iframeSrc = googleFormIframeEl.getAttribute('src');
+            if (!currentActiveForm || iframeSrc === 'about:blank' || !iframeSrc.startsWith('http')) return;
+            if (isIframeInitialLoad) {
+                isIframeInitialLoad = false;
+                logEventToSheet(`เริ่มกรอกแบบสอบถาม: ${currentActiveForm.title}`);
+                addVisibilityChangeListener();
+            } else {
+                isFormSubmitted = true;
+                iframeOverlay.style.display = 'block';
+                logEventToSheet(`ส่งแบบสอบถามสำเร็จ (สันนิษฐาน): ${currentActiveForm.title}`);
+            }
+            updateFormViewButtons();
+        };
+
+        backToLinksBtnEl.addEventListener('click', () => {
+            logEventToSheet(`ผู้ใช้ออกจากแบบสอบถามด้วยตนเอง: ${currentActiveForm.title}`);
+            navigateToLinksPage();
+        });
+
+        formCompletedSuccessBtnEl.addEventListener('click', () => {
+            if (currentActiveForm) {
+                if (!completedFormIds.includes(currentActiveForm.id)) {
+                    completedFormIds.push(currentActiveForm.id);
+                    localStorage.setItem('completedFormIds', JSON.stringify(completedFormIds));
+                }
+                logEventToSheet(`ผู้ใช้ยืนยันทำแบบทดสอบสำเร็จ: ${currentActiveForm.title}`);
+                navigateToLinksPage();
+            }
+        });
+
+        function handleVisibilityChange() {
+            if (!currentActiveForm || !isVisibilityListenerActive) return;
+            if (document.hidden) {
+                logEventToSheet(`ผู้ใช้สลับหน้าจอ/ซ่อนเบราว์เซอร์ขณะทำ: ${currentActiveForm.title}`);
+            }
+        }
+
+        function addVisibilityChangeListener() {
+            if (!isVisibilityListenerActive) {
+                document.addEventListener('visibilitychange', handleVisibilityChange);
+                isVisibilityListenerActive = true;
+            }
+        }
+
+        function removeVisibilityChangeListener() {
+            if (isVisibilityListenerActive) {
+                document.removeEventListener('visibilitychange', handleVisibilityChange);
+                isVisibilityListenerActive = false;
+            }
+        }
+        
+        async function logEventToSheet(message) {
+            if (!mainAppUrl) return;
+            const payload = new FormData();
+            payload.append('timestamp', new Date().toISOString());
+            payload.append('userId', liffUserProfile ? liffUserProfile.userId : 'N/A');
+            payload.append('displayName', liffUserProfile ? liffUserProfile.displayName : 'N/A');
+            payload.append('formId', currentActiveForm ? currentActiveForm.id : 'N/A');
+            payload.append('formTitle', currentActiveForm ? currentActiveForm.title : 'N/A');
+            payload.append('message', message);
+            payload.append('userAgent', navigator.userAgent);
+            payload.append('liffClientVersion', liff.getVersion() || 'N/A');
+            payload.append('isInClient', String(liff.isInClient()));
+            payload.append('os', liff.getOS() || 'N/A');
+            payload.append('language', liff.getLanguage() || 'N/A');
+            const context = liff.getContext();
+            if (context) {
+                payload.append('lineContextType', context.type || 'N/A');
+                payload.append('lineContextViewType', context.viewType || 'N/A');
+                payload.append('lineContextUtouId', context.utouId || 'N/A');
+                payload.append('lineContextRoomId', context.roomId || 'N/A');
+                payload.append('lineContextGroupId', context.groupId || 'N/A');
+                payload.append('lineIsAuthenticated', context.accessToken ? 'true' : 'false');
+            }
+            try {
+                await fetch(mainAppUrl, { method: 'POST', mode: 'no-cors', body: payload });
+            } catch (error) {
+                console.error('Error sending data to Google Sheet:', error);
+            }
+        }
+    </script>
+</body>
+</html>
